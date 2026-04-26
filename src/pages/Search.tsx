@@ -49,10 +49,10 @@ export default function Search() {
       const result = await parseSearchWithAI(query);
       setAiResult(result);
 
-      // Auto-apply AI filters if AI was used
-      if (result.isAIQuery) {
-        if (result.categoryId) setFilterCategory(result.categoryId);
-        if (result.maxPrice) setManualMaxPrice(result.maxPrice);
+      // Only auto-apply price filter from AI — never auto-change category dropdown
+      // (category is used internally for display only, not for filtering)
+      if (result.isAIQuery && result.maxPrice) {
+        setManualMaxPrice(result.maxPrice);
       }
 
       setIsAILoading(false);
@@ -83,16 +83,16 @@ export default function Search() {
     .filter((p) => {
       if (!query || !aiResult) return false;
 
-      const matchesCategory =
-        filterCategory === 'all' ||
-        p.categoryId === filterCategory ||
-        (aiResult.isAIQuery && aiResult.categoryId && p.categoryId === aiResult.categoryId);
-
+      // Price filter: prefer manual override, then AI-extracted price
       const effectiveMaxPrice =
         manualMaxPrice !== '' ? (manualMaxPrice as number) : aiResult.maxPrice;
       const matchesPrice = effectiveMaxPrice ? p.price <= effectiveMaxPrice : true;
 
-      // Keyword matching
+      // Category filter: only apply if user manually changed it from 'all'
+      const matchesCategory =
+        filterCategory === 'all' || p.categoryId === filterCategory;
+
+      // Build the product name string for matching
       const productName =
         typeof p.name === 'string'
           ? p.name.toLowerCase()
@@ -101,18 +101,11 @@ export default function Search() {
               .join(' ')
               .toLowerCase();
 
+      // Keywords always required — AI or plain text
       const keywords = aiResult.isAIQuery ? aiResult.keywords : [query.toLowerCase()];
       const matchesKeyword = keywords.some((kw) => productName.includes(kw.toLowerCase()));
 
-      // For AI queries: if category is set, also show all products in that category
-      // even if keyword doesn't match (broad category queries like "baby products")
-      const matchesCategoryBroad =
-        aiResult.isAIQuery &&
-        aiResult.categoryId &&
-        p.categoryId === aiResult.categoryId &&
-        matchesPrice;
-
-      return (matchesKeyword && matchesPrice && matchesCategory) || matchesCategoryBroad || false;
+      return matchesKeyword && matchesPrice && matchesCategory;
     })
     .sort((a, b) => {
       if (sortBy === 'price_asc') return a.price - b.price;
