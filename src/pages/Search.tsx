@@ -76,7 +76,7 @@ export default function Search() {
     setSearchParams({ q: trimmed });
   };
 
-  // Filter and sort products — keywords are ALWAYS required
+  // Filter and sort products
   const searchResults = products
     .filter((p) => {
       if (!query || !aiResult) return false;
@@ -86,9 +86,9 @@ export default function Search() {
         manualMaxPrice !== '' ? (manualMaxPrice as number) : aiResult.maxPrice;
       const matchesPrice = effectiveMaxPrice ? p.price <= effectiveMaxPrice : true;
 
-      // Category filter: only apply if user manually changed it from 'all'
-      const matchesCategory =
-        filterCategory === 'all' || p.categoryId === filterCategory;
+      // Category filter
+      const categorySelected = filterCategory !== 'all';
+      const matchesCategory = !categorySelected || p.categoryId === filterCategory;
 
       // Build the product name string for matching
       const productName =
@@ -99,11 +99,17 @@ export default function Search() {
               .join(' ')
               .toLowerCase();
 
-      // Keywords always required — AI or plain text, no exceptions
+      // Keyword matching
       const keywords = aiResult.isAIQuery ? aiResult.keywords : [query.toLowerCase()];
       const matchesKeyword = keywords.some((kw) => productName.includes(kw.toLowerCase()));
 
-      return matchesKeyword && matchesPrice && matchesCategory;
+      // If user manually picked a category: show ALL products in that category (+ price filter)
+      // Keywords only required when no specific category is selected
+      if (categorySelected) {
+        return matchesCategory && matchesPrice;
+      }
+
+      return matchesKeyword && matchesPrice;
     })
     .sort((a, b) => {
       if (sortBy === 'price_asc') return a.price - b.price;
@@ -122,7 +128,6 @@ export default function Search() {
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900 pb-32">
-      {/* Search Header */}
       <div className="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700/50 sticky top-16 md:top-20 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex flex-col gap-4">
