@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny for everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'ntwaricedrick001@gmail.com';
+    }
+
+    function isValidOrder(data) {
+      return data.userId is string &&
+             data.userId == request.auth.uid &&
+             data.items is list &&
+             data.totalPrice is number &&
+             data.selectedBranchId is string &&
+             data.deliveryLocation is string &&
+             data.paymentMethod in ['momo', 'airtel', 'card'] &&
+             data.status == 'processing' &&
+             data.createdAt == request.time;
+    }
+
+    // Orders Collection
+    match /orders/{orderId} {
+      // Users can only see their own orders, Admins can see everything
+      allow list, get: if isOwner(resource.data.userId) || isAdmin();
+      
+      // Users can create orders if they are signed in and the data is valid
+      allow create: if isSignedIn() && isValidOrder(request.resource.data);
+      
+      // Admins can update orders
+      allow update: if isAdmin();
+    }
+    
+    // Product Overrides Collection
+    match /product_overrides/{productId} {
+      allow read: if true; // Products need to be read by everyone
+      allow write: if isAdmin(); // Only admins can update stock and pricing
+    }
+
+    // Notifications Collection
+    match /notifications/{notificationId} {
+      allow list, get: if isOwner(resource.data.userId);
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (isOwner(resource.data.userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']));
+      allow delete: if isAdmin() || isOwner(resource.data.userId);
+    }
+
+    // Connection test document
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

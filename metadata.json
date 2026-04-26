@@ -1,0 +1,6 @@
+{
+  "name": "Simba Supermarket",
+  "description": "A modern, high-performance e-commerce web app inspired by Getir, serving as Rwanda's online supermarket.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": []
+}
