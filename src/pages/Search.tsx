@@ -43,14 +43,12 @@ export default function Search() {
     setIsAILoading(true);
     setIsLoading(true);
 
-    // Debounce AI call slightly
     if (aiSearchTimeout.current) clearTimeout(aiSearchTimeout.current);
     aiSearchTimeout.current = setTimeout(async () => {
       const result = await parseSearchWithAI(query);
       setAiResult(result);
 
       // Only auto-apply price filter from AI — never auto-change category dropdown
-      // (category is used internally for display only, not for filtering)
       if (result.isAIQuery && result.maxPrice) {
         setManualMaxPrice(result.maxPrice);
       }
@@ -64,7 +62,7 @@ export default function Search() {
     };
   }, [query]);
 
-  // Also fake-loading on sort/filter changes
+  // Fake-loading on sort/filter changes
   useEffect(() => {
     if (!query) return;
     setIsLoading(true);
@@ -78,7 +76,7 @@ export default function Search() {
     setSearchParams({ q: trimmed });
   };
 
-  // Filter and sort products using AI result or plain text
+  // Filter and sort products — keywords are ALWAYS required
   const searchResults = products
     .filter((p) => {
       if (!query || !aiResult) return false;
@@ -101,7 +99,7 @@ export default function Search() {
               .join(' ')
               .toLowerCase();
 
-      // Keywords always required — AI or plain text
+      // Keywords always required — AI or plain text, no exceptions
       const keywords = aiResult.isAIQuery ? aiResult.keywords : [query.toLowerCase()];
       const matchesKeyword = keywords.some((kw) => productName.includes(kw.toLowerCase()));
 
@@ -366,7 +364,6 @@ export default function Search() {
             <p className="text-zinc-500 dark:text-zinc-400 max-w-md mx-auto mb-6">
               {t('search.try_again')}
             </p>
-            {/* Suggest clearing price filter */}
             {(manualMaxPrice !== '' || aiResult?.maxPrice) && (
               <button
                 onClick={() => {
