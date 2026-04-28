@@ -1,80 +1,13 @@
 import Groq from 'groq-sdk';
+import { MergedProduct } from '../context/ProductContext';
 
 export interface AISearchResult {
-  keywords: string[];        // keywords to match against product names
+  matchedIds: string[];      // exact product IDs matched by AI
   maxPrice?: number;         // extracted price limit in RWF
-  categoryId?: string;       // matched category id
-  explanation: string;       // human-readable explanation of what AI understood
-  isAIQuery: boolean;        // true if AI was used
+  categoryId?: string;       // matched category id (only for pure category queries)
+  explanation: string;       // human-readable explanation
+  isAIQuery: boolean;
 }
-
-const CATEGORY_MAP: Record<string, string> = {
-  'food': 'food-products',
-  'food products': 'food-products',
-  'groceries': 'food-products',
-  'grocery': 'food-products',
-  'drink': 'alcoholic-drinks',
-  'drinks': 'alcoholic-drinks',
-  'alcohol': 'alcoholic-drinks',
-  'alcoholic': 'alcoholic-drinks',
-  'beer': 'alcoholic-drinks',
-  'wine': 'alcoholic-drinks',
-  'baby': 'baby-products',
-  'babies': 'baby-products',
-  'children': 'baby-products',
-  'kids': 'baby-products',
-  'child': 'baby-products',
-  'infant': 'baby-products',
-  'toddler': 'baby-products',
-  'personal care': 'personal-care',
-  'cosmetics': 'personal-care',
-  'beauty': 'personal-care',
-  'hygiene': 'personal-care',
-  'cleaning': 'cleaning-sanitary',
-  'sanitary': 'cleaning-sanitary',
-  'kitchen': 'kitchen-electronics',
-  'kitchenware': 'kitchen-electronics',
-  'electronics': 'kitchen-electronics',
-  'storage': 'kitchen-storage',
-  'pet': 'pet-care',
-  'pets': 'pet-care',
-  'sports': 'sports-wellness',
-  'wellness': 'sports-wellness',
-  'fitness': 'sports-wellness',
-};
-
-const SYSTEM_PROMPT = `You are a smart product search assistant for Simba Supermarket in Rwanda. 
-Your job is to parse natural language shopping queries and extract structured search parameters.
-
-The store sells products in these categories:
-- food-products: milk, bread, rice, meat, snacks, beverages, cooking ingredients, etc.
-- alcoholic-drinks: beer, wine, whisky, vodka, gin, rum, champagne, energy drinks, etc.
-- baby-products: diapers, baby food, toys, wipes, baby care items, children's products
-- personal-care: shampoo, soap, lotion, cream, deodorant, perfume, razors, etc.
-- cleaning-sanitary: detergent, bleach, toilet paper, sponges, mops, cleaning products
-- kitchen-electronics: pots, pans, kettles, blenders, irons, cups, plates, knives, etc.
-- kitchen-storage: bottles, canisters, flasks, containers
-- sports-wellness: sports equipment, fitness gear, yoga mats, dumbbells
-- pet-care: dog food, cat food, pet accessories
-
-Prices are in RWF (Rwandan Francs). Common price ranges: 500-200,000 RWF.
-
-Respond ONLY with a valid JSON object (no markdown, no explanation outside JSON):
-{
-  "keywords": ["keyword1", "keyword2"],
-  "maxPrice": 5000,
-  "categoryId": "food-products",
-  "explanation": "Searching for milk products under 5,000 RWF"
-}
-
-Rules:
-- keywords: 1-4 most relevant product name keywords. For broad queries like "children products" use ["baby", "toy", "diaper", "wipes"]
-- maxPrice: number in RWF if mentioned, otherwise omit the field
-- categoryId: one of the category ids above if clearly implied, otherwise omit
-- explanation: short friendly sentence describing what you understood
-- If query mentions "cheap", "affordable", "budget" without a price, set maxPrice to 3000
-- If query mentions "premium", "luxury", "best" without a price, omit maxPrice
-- Always respond with valid JSON only`;
 
 let groqClient: Groq | null = null;
 
@@ -89,86 +22,153 @@ function getGroqClient(): Groq {
   return groqClient;
 }
 
-export async function parseSearchWithAI(query: string): Promise<AISearchResult> {
-  // Detect if query is complex/natural language (not just a simple product name)
-  const isNaturalLanguage = 
-    /\b(less than|under|below|cheaper than|max|maximum|affordable|cheap|budget|good for|best for|for children|for kids|for baby|for babies|for pets|alcoholic|non-alcoholic|healthy|organic|premium|luxury)\b/i.test(query) ||
-    /\d+/.test(query) || // contains numbers (likely a price)
-    query.split(' ').length >= 3; // 3+ words suggests natural language
+// Detect if query needs AI (natural language) or is a plain product name search
+function isNaturalLanguageQuery(query: string): boolean {
+  return (
+    /\b(less than|under|below|cheaper than|max|maximum|affordable|cheap|budget|good for|best for|for children|for kids|for baby|for babies|for pets|alcoholic|non-alcoholic|healthy|organic|premium|luxury|recommend|suggest|show me|find me|i need|i want)\b/i.test(query) ||
+    /\d{3,}/.test(query) || // contains a number with 3+ digits (likely a price)
+    query.trim().split(/\s+/).length >= 3 // 3+ words = natural language
+  );
+}
 
-  if (!isNaturalLanguage) {
-    // Simple single/double word query — skip AI, do direct search
+export async function searchWithAI(
+  query: string,
+  products: MergedProduct[]
+): Promise<AISearchResult> {
+  const trimmed = query.trim();
+
+  if (!trimmed) {
+    return { matchedIds: [], explanation: '', isAIQuery: false };
+  }
+
+  // Simple 1-2 word query: skip AI, do fast local keyword match
+  if (!isNaturalLanguageQuery(trimmed)) {
+    const lower = trimmed.toLowerCase();
+    const matched = products.filter((p) => {
+      const name =
+        typeof p.name === 'string'
+          ? p.name
+          : [p.name.EN, p.name.FR, p.name.KIN].filter(Boolean).join(' ');
+      return name.toLowerCase().includes(lower);
+    });
     return {
-      keywords: [query.toLowerCase()],
-      isAIQuery: false,
+      matchedIds: matched.map((p) => p.id),
       explanation: '',
+      isAIQuery: false,
     };
   }
+
+  // Build a compact product catalog for the AI
+  // Format: "ID|Name|Price|Category"
+  const catalog = products
+    .map((p) => {
+      const name =
+        typeof p.name === 'string' ? p.name : p.name.EN || '';
+      return `${p.id}|${name}|${p.price}|${p.categoryId}`;
+    })
+    .join('\n');
+
+  const systemPrompt = `You are a product search engine for Simba Supermarket in Rwanda.
+You receive a natural language query and a product catalog, and you return ONLY the IDs of matching products.
+
+CATALOG FORMAT: ID|ProductName|PriceRWF|CategoryID
+
+CATEGORIES:
+- food-products: milk, bread, rice, meat, snacks, coffee, tea, cooking ingredients
+- alcoholic-drinks: beer, wine, whisky, vodka, gin, rum, champagne
+- baby-products: diapers, baby food, toys, wipes, baby care
+- personal-care: shampoo, soap, lotion, cream, deodorant, perfume
+- cleaning-sanitary: detergent, bleach, toilet paper, sponges, mops
+- kitchen-electronics: pots, pans, kettles, blenders, irons, cups, plates
+- kitchen-storage: bottles, canisters, flasks, containers
+- sports-wellness: sports equipment, fitness gear, dumbbells
+- pet-care: dog food, cat food, pet accessories
+
+RULES:
+1. Match products by NAME relevance to the query — be STRICT. "milk" should only match products with "milk" in the name, NOT bread or baguette.
+2. Apply price filter: if query says "less than X" or "under X", only include products where Price <= X
+3. For broad queries like "baby products" or "cleaning products", match all products in that category
+4. For "good for children" / "for kids" → match baby-products category
+5. For "alcoholic drinks" → match alcoholic-drinks category
+6. Prices are in RWF (Rwandan Francs)
+7. Return maximum 60 most relevant product IDs
+
+Respond ONLY with this JSON (no markdown):
+{
+  "ids": ["id1", "id2", ...],
+  "maxPrice": 5000,
+  "explanation": "Found X milk products under 5,000 RWF"
+}`;
 
   try {
     const client = getGroqClient();
     const completion = await client.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
+      model: 'llama-3.3-70b-versatile',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: query },
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: `Query: "${trimmed}"\n\nCATALOG:\n${catalog}`,
+        },
       ],
-      temperature: 0.1,
-      max_tokens: 200,
+      temperature: 0.0,
+      max_tokens: 2000,
     });
 
     const raw = completion.choices[0]?.message?.content?.trim() || '{}';
-    
-    // Extract JSON even if there's extra text
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('No JSON in response');
-    
+
     const parsed = JSON.parse(jsonMatch[0]);
+    const ids: string[] = Array.isArray(parsed.ids)
+      ? parsed.ids.map(String)
+      : [];
 
     return {
-      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [query],
+      matchedIds: ids,
       maxPrice: typeof parsed.maxPrice === 'number' ? parsed.maxPrice : undefined,
-      categoryId: typeof parsed.categoryId === 'string' ? parsed.categoryId : undefined,
       explanation: typeof parsed.explanation === 'string' ? parsed.explanation : '',
       isAIQuery: true,
     };
   } catch (err) {
-    console.error('AI search failed, falling back to text search:', err);
-    // Fallback: try basic local parsing
-    return localFallbackParse(query);
+    console.error('AI search failed, falling back to local search:', err);
+    return localFallback(trimmed, products);
   }
 }
 
-function localFallbackParse(query: string): AISearchResult {
+// Local fallback when AI is unavailable
+function localFallback(query: string, products: MergedProduct[]): AISearchResult {
   const lower = query.toLowerCase();
-  
+
   // Extract price
-  const priceMatch = lower.match(/(?:less than|under|below|max|maximum|cheaper than)\s*(?:rwf\s*)?(\d[\d,]*)/i) ||
-                     lower.match(/(\d[\d,]*)\s*(?:rwf|frw|francs?)?/i);
+  const priceMatch =
+    lower.match(/(?:less than|under|below|max|maximum|cheaper than)\s*(?:rwf\s*)?(\d[\d,]*)/i) ||
+    lower.match(/(\d{3,}[\d,]*)\s*(?:rwf|frw|francs?)?/i);
   const maxPrice = priceMatch ? parseInt(priceMatch[1].replace(/,/g, '')) : undefined;
 
-  // Extract category
-  let categoryId: string | undefined;
-  for (const [keyword, catId] of Object.entries(CATEGORY_MAP)) {
-    if (lower.includes(keyword)) {
-      categoryId = catId;
-      break;
-    }
-  }
-
-  // Extract keywords (remove price/filter words)
+  // Strip price/filter words to get core keywords
   const cleaned = lower
     .replace(/less than|under|below|max|maximum|cheaper than|affordable|cheap|budget|good for|best for|for\s+\w+/gi, '')
     .replace(/\d[\d,]*/g, '')
     .replace(/rwf|frw|francs?/gi, '')
     .trim();
 
-  const keywords = cleaned.split(/\s+/).filter(w => w.length > 2);
+  const keywords = cleaned.split(/\s+/).filter((w) => w.length > 2);
+
+  const matched = products.filter((p) => {
+    const name =
+      typeof p.name === 'string'
+        ? p.name
+        : [p.name.EN, p.name.FR, p.name.KIN].filter(Boolean).join(' ');
+    const nameLower = name.toLowerCase();
+    const priceOk = maxPrice ? p.price <= maxPrice : true;
+    const nameMatch = keywords.some((kw) => nameLower.includes(kw));
+    return priceOk && nameMatch;
+  });
 
   return {
-    keywords: keywords.length > 0 ? keywords : [query],
+    matchedIds: matched.map((p) => p.id),
     maxPrice,
-    categoryId,
     explanation: '',
     isAIQuery: false,
   };
